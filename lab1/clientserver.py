@@ -35,7 +35,7 @@ class Server:
                     data = connection.recv(1024)  # receive data from client
                     if not data:
                         break  # stop if client stopped
-                    connection.send(data + "*".encode('ascii'))  # return sent data plus an "*"
+                    connection.send(data + "*".encode('utf-8'))  # return sent data plus an "*"
                 connection.close()  # close the connection
             except socket.timeout:
                 pass  # ignore timeouts
