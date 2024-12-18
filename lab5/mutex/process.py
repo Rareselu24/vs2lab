@@ -1,6 +1,7 @@
 import logging
 import random
 import time
+import threading
 
 from constMutex import ENTER, RELEASE, ALLOW
 
@@ -40,6 +41,8 @@ class Process:
         self.queue = []  # The request queue list
         self.clock = 0  # The current logical clock
         self.logger = logging.getLogger("vs2lab.lab5.mutex.process.Process")
+        self.failed_processes = set() # Set für abgestützte Prozesse
+        self.timeout_threshold = 5 # 5 Sekunden Timeout um Fehler zu erkennen
 
     def __mapid(self, id='-1'):
         # resolve channel member address to a human friendly identifier
@@ -59,6 +62,8 @@ class Process:
 
     def __request_to_enter(self):
         self.clock = self.clock + 1  # Increment clock value
+        self.logger.info("{} sendet ENTER-Anfrage an andere Prozesse (Clock: {})."
+                         .format(self.__mapid(), self.clock))
         request_msg = (self.clock, self.process_id, ENTER)
         self.queue.append(request_msg)  # Append request to queue
         self.__cleanup_queue()  # Sort the queue
@@ -66,16 +71,22 @@ class Process:
 
     def __allow_to_enter(self, requester):
         self.clock = self.clock + 1  # Increment clock value
+        self.logger.info("{} sendet ALLOW-Antwort an {} (Clock: {})."
+                         .format(self.__mapid(), self.__mapid(requester), self.clock))
         msg = (self.clock, self.process_id, ALLOW)
         self.channel.send_to([requester], msg)  # Permit other
 
     def __release(self):
         # need to be first in queue to issue a release
         assert self.queue[0][1] == self.process_id, 'State error: inconsistent local RELEASE'
+        self.logger.info("{} verlässt die kritische Sektion und sendet RELEASE (Clock: {})."
+                         .format(self.__mapid(), self.clock))
 
         # construct new queue from later ENTER requests (removing all ALLOWS)
         tmp = [r for r in self.queue[1:] if r[2] == ENTER]
         self.queue = tmp  # and copy to new queue
+        self.logger.info("{} hat ENTER-Anfrage von {} erhalten (Clock: {})."
+                                 .format(self.__mapid(), self.__mapid(msg[1]), self.clock))
         self.clock = self.clock + 1  # Increment clock value
         msg = (self.clock, self.process_id, RELEASE)
         # Multicast release notification
@@ -90,34 +101,61 @@ class Process:
         return first_in_queue and all_have_answered
 
     def __receive(self):
-         # Pick up any message
-        _receive = self.channel.receive_from(self.other_processes, 10) 
+        """
+        Empfängt Nachrichten von anderen Prozessen und verarbeitet sie entsprechend.
+
+        Diese Methode wird verwendet, um Nachrichten von anderen Prozessen über einen Kommunikationskanal zu empfangen.
+        Abhängig von der Art der empfangenen Nachricht (ENTER, ALLOW, RELEASE) wird die Nachricht verarbeitet und die interne
+        Warteschlange sowie die Uhr des Prozesses aktualisiert.
+
+        Ablauf:
+        1. Empfang einer Nachricht von anderen Prozessen.
+        2. Aktualisierung der internen Uhr basierend auf der empfangenen Nachricht.
+        3. Verarbeitung der Nachricht:
+            - ENTER: Die Anfrage wird zur Warteschlange hinzugefügt und eine Erlaubnis wird gesendet.
+            - ALLOW: Die Erlaubnis wird zur Warteschlange hinzugefügt, wenn der Absender nicht abgestürzt ist.
+            - RELEASE: Die Freigabe wird verarbeitet und die entsprechende ENTER-Anfrage wird aus der Warteschlange entfernt.
+        4. Aufräumen und Sortieren der Warteschlange.
+        5. Behandlung von Zeitüberschreitungen und Erkennung abgestürzter Prozesse.
+
+        Hinweis: Diese Methode wird intern verwendet und sollte nicht direkt aufgerufen werden.
+
+        """
+        # Empfang einer Nachricht
+        _receive = self.channel.receive_from(self.other_processes, 10)
         if _receive:
             msg = _receive[1]
 
-            self.clock = max(self.clock, msg[0])  # Adjust clock value...
-            self.clock = self.clock + 1  # ...and increment
+            # Uhrwert anpassen und inkrementieren
+            self.clock = max(self.clock, msg[0])
+            self.clock = self.clock + 1
 
-            self.logger.debug("{} received {} from {}.".format(
+            self.logger.debug("{} hat {} von {} empfangen.".format(
                 self.__mapid(),
                 "ENTER" if msg[2] == ENTER
                 else "ALLOW" if msg[2] == ALLOW
                 else "RELEASE", self.__mapid(msg[1])))
 
             if msg[2] == ENTER:
-                self.queue.append(msg)  # Append an ENTER request
-                # and unconditionally allow (don't want to access CS oneself)
-                self.__allow_to_enter(msg[1])
-            elif msg[2] == ALLOW:
-                self.queue.append(msg)  # Append an ALLOW
-            elif msg[2] == RELEASE:
-                # assure release requester indeed has access (his ENTER is first in queue)
-                assert self.queue[0][1] == msg[1] and self.queue[0][2] == ENTER, 'State error: inconsistent remote RELEASE'
-                del (self.queue[0])  # Just remove first message
+                self.queue.append(msg)  # Eine ENTER-Anfrage zur Warteschlange hinzufügen
+                # und bedingungslos erlauben (möchte selbst nicht auf CS zugreifen)
+                if msg[1] not in self.failed_processes:
+                    self.__allow_to_enter(msg[1])
 
-            self.__cleanup_queue()  # Finally sort and cleanup the queue
-        else:        
-            self.logger.warning("{} timed out on RECEIVE.".format(self.__mapid()))
+            elif msg[2] == ALLOW:
+                if(msg[1] not in self.failed_processes):
+                    return # Ignoriere ALLOW von abgestürzten Prozessen
+
+                self.queue.append(msg)  # Ein ALLOW zur Warteschlange hinzufügen
+            elif msg[2] == RELEASE:
+                # Sicherstellen, dass der Freigabeanforderer tatsächlich Zugriff hat (sein ENTER ist zuerst in der Warteschlange)
+                assert self.queue[0][1] == msg[1] and self.queue[0][2] == ENTER, 'Zustandsfehler: inkonsistente entfernte RELEASE'
+                del (self.queue[0])  # Einfach die erste Nachricht entfernen
+
+            self.__cleanup_queue()  # Schließlich die Warteschlange sortieren und bereinigen
+        else:
+            # Keine Nachricht empfangen
+            pass
 
     def init(self):
         self.channel.bind(self.process_id)
@@ -138,6 +176,7 @@ class Process:
             # and random is true
             if len(self.all_processes) > 1 and \
                     random.choice([True, False]):
+                self.logger.info("{} möchte die kritische Sektion betreten.".format(self.__mapid()))
                 self.logger.debug("{} wants to ENTER CS at CLOCK {}."
                     .format(self.__mapid(), self.clock))
 
@@ -147,10 +186,12 @@ class Process:
 
                 # Stay in CS for some time ...
                 sleep_time = random.randint(0, 2000)
+                self.logger.info("{} betritt die kritische Sektion.".format(self.__mapid()))
                 self.logger.debug("{} enters CS for {} milliseconds."
                     .format(self.__mapid(), sleep_time))
                 print(" CS <- {}".format(self.__mapid()))
                 time.sleep(sleep_time/1000)
+                self.logger.info("{} verlässt die kritische Sektion.".format(self.__mapid()))
 
                 # ... then leave CS
                 print(" CS -> {}".format(self.__mapid()))

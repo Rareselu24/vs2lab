@@ -1,63 +1,91 @@
-""" 
+"""
 Application with a critical section (CS)
-- sets up a group of peers 
+- sets up a group of peers
 - peers compete for some critical section
 - peers run in separate processes
 - multiprocessing should work on unix and windows
-- terminates a random process to simulate a crash fault
+- terminates random processes to simulate crash faults
 """
 
 import sys
-import time 
+import time
 import logging
 import random
 import multiprocessing as mp
+from threading import Thread
 
 from process import Process
 from context import lab_channel, lab_logging
 
-lab_logging.setup(stream_level=logging.INFO, file_level=logging.DEBUG)
+# Setup Logging
+lab_logging.setup(stream_level=logging.DEBUG, file_level=logging.DEBUG)
 
 logger = logging.getLogger("vs2lab.lab5.mutex.doit")
 
 
 def create_and_run(num_bits, proc_class, enter_bar, run_bar):
     """
-    Create and run a peer
-    :param num_bits: address range of the channel
-    :param node_class: class of peer
-    :param enter_bar: barrier syncing channel population 
-    :param run_bar: barrier syncing bootstrap
+    Erzeugt und führt einen Peer aus
+    :param num_bits: Adressbereich des Kanals
+    :param node_class: Klasse des Peers
+    :param enter_bar: Barrier für die Synchronisation der Kanalerstellung
+    :param run_bar: Barrier für die Synchronisation des Starts
     """
     chan = lab_channel.Channel(n_bits=num_bits)
     proc = proc_class(chan)
-    enter_bar.wait()  # wait for all peers to join the channel
-    proc.init()  # do some bootstrapping
-    run_bar.wait()  # wait for all nodes to finish
-    proc.run()  # start operating
+    enter_bar.wait()  # Warte, bis alle Peers dem Kanal beigetreten sind
+    proc.init()  # Bootstrapping ausführen
+    run_bar.wait()  # Warte, bis alle Prozesse bereit sind
+    proc.run()  # Starte die Ausführung
 
 
-if __name__ == "__main__":  # if script is started from command line
-    m = 8  # Number of bits for process ids
-    n = 4  # Number of processes in the group
+def simulate_crashes(children, num_crashes=2):
+    """
+    Simuliert den Absturz von Prozessen
+    :param children: Liste der laufenden Prozesse
+    :param num_crashes: Anzahl der simulierten Abstürze
+    """
+    logger.info("Starte Simulation von Abstürzen...")
+    for _ in range(num_crashes):
+        if len(children) > 0:
+            # Wähle zufällig einen Prozess aus, der abstürzen soll
+            proc_id = random.randint(0, len(children) - 1)
+            proc_to_crash = children[proc_id]
+            del(children[proc_id])  # Entferne den Prozess aus der Liste
 
-    # Check for command line parameters m, n.
+            # Beende den ausgewählten Prozess
+            proc_to_crash.terminate()
+            proc_to_crash.join()
+
+            logger.warning("Ein Prozess ist abgestürzt: {}".format(proc_to_crash))
+
+        # Warte zufällig zwischen 5 und 10 Sekunden vor dem nächsten Absturz
+        time.sleep(random.randint(5, 10))
+
+    logger.info("Simulation der Abstürze abgeschlossen.")
+
+
+if __name__ == "__main__":  # Startpunkt des Skripts
+    m = 8  # Anzahl der Bits für Prozess-IDs
+    n = 4  # Anzahl der Prozesse in der Gruppe
+
+    # Überprüfe Kommandozeilenparameter m und n
     if len(sys.argv) > 2:
         m = int(sys.argv[1])
         n = int(sys.argv[2])
 
-    # Flush communication channel
+    # Kanal leeren, um alte Nachrichten zu löschen
     chan = lab_channel.Channel()
     chan.channel.flushall()
 
-    # we need to spawn processes for support of windows
+    # Prozesse für Windows-Unterstützung mit "spawn" starten
     mp.set_start_method('spawn')
 
-    # create barriers to synchonize bootstrapping
-    bar1 = mp.Barrier(n)  # Wait for channel population to complete
-    bar2 = mp.Barrier(n)  # Wait for process-group init to complete
+    # Barrieren für die Synchronisation erstellen
+    bar1 = mp.Barrier(n)  # Warten, bis alle Prozesse dem Kanal beigetreten sind
+    bar2 = mp.Barrier(n)  # Warten, bis die Initialisierung abgeschlossen ist
 
-    # start n competing peers in separate processes
+    # Starte n konkurrierende Peers in separaten Prozessen
     children = []
     for i in range(n):
         peer_proc = mp.Process(
@@ -67,17 +95,16 @@ if __name__ == "__main__":  # if script is started from command line
         children.append(peer_proc)
         peer_proc.start()
 
-    # terminate a random process after some time (10 seconds)
-    time.sleep(10)
-    proc_id = random.randint(0, len(children) - 1)
-    proc_to_crash = children[proc_id]
-    del(children[proc_id])    
+    # Starte die Simulation von Abstürzen in einem separaten Thread
+    crash_simulation_thread = Thread(target=simulate_crashes, args=(children,))
+    crash_simulation_thread.start()
 
-    proc_to_crash.terminate()
-    proc_to_crash.join()
-
-    logger.warning("A process has crashed: {}".format(proc_to_crash))
-
-    # wait for peer procs to finish
+    # Hauptprozess wartet auf alle verbleibenden Prozesse, während die Simulation läuft
+    logger.info("Warte, bis alle verbleibenden Prozesse abgeschlossen sind...")
     for peer_proc in children:
         peer_proc.join()
+
+    # Warte, bis der Crash-Simulations-Thread abgeschlossen ist
+    crash_simulation_thread.join()
+
+    logger.info("Alle Prozesse abgeschlossen. Ende des Programms.")
