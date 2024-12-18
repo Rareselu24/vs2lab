@@ -137,7 +137,7 @@ class ChordNode:
             sender: str = message[0]  # Identify the sender
             request = message[1]  # And the actual request
 
-            # If sender is a node (that stays in the ring) then update known nodes
+            # Wenn Anfrage von existierendem Knoten kommt, Knotenliste aktualisieren
             if request[0] != constChord.LEAVE and self.channel.channel.sismember('node', sender):
                 self.add_node(sender)  # remember sender node
 
@@ -146,17 +146,36 @@ class ChordNode:
                                   .format(self.node_id, int(sender)))
                 break
 
-            if request[0] == constChord.LOOKUP_REQ:  # A lookup request
-                self.logger.info("Node {:04n} received LOOKUP {:04n} from {:04n}."
-                                 .format(self.node_id, int(request[1]), int(sender)))
+            if request[0] == constChord.LOOKUP_REQ:
+                # Erwartetes Format: (LOOKUP_REQ, original_requestor, key)
+                original_requestor = request[1]
+                key = request[2]
 
-                # look up and return local successor 
-                next_id: int = self.local_successor_node(request[1])
-                self.channel.send_to([sender], (constChord.LOOKUP_REP, next_id))
+                self.logger.info("Node {:04n} received LOOKUP {:04n} from {:04n} (original_requestor: {:04n})."
+                                 .format(self.node_id, int(key), int(sender), int(original_requestor)))
 
-                # Finally do a sanity check
-                if not self.channel.exists(next_id):  # probe for existence
-                    self.delete_node(next_id)  # purge disappeared node
+                next_id: int = self.local_successor_node(key)
+
+                if next_id == self.node_id:
+                    # Dieser Knoten ist zuständig, sende Ergebnis an original_requestor zurück
+                    self.channel.send_to([str(original_requestor)], (constChord.LOOKUP_REP, key))
+                else:
+                    # Weiterleitung der Anfrage an den nächstwahrscheinlichen Knoten
+                    # original_requestor bleibt gleich, damit die Antwort später
+                    # an den ursprünglichen Anfrager zurückgeschickt werden kann
+                    self.channel.send_to([str(next_id)], (constChord.LOOKUP_REQ, original_requestor, key))
+
+                # Sanity check - wie gehabt
+                if not self.channel.exists(next_id):
+                    self.delete_node(next_id)
+
+            elif request[0] == constChord.LOOKUP_REP:
+                # LOOKUP_REP Format: (LOOKUP_REP, key)
+                # Diese Antwort kommt bei original_requestor Knoten/Client an
+                key = request[1]
+                self.logger.info("Node {:04n} received LOOKUP_REP for key {:04n} from {:04n}."
+                                 .format(self.node_id, int(key), int(sender)))
+                # Hier kann man optional logging oder weitere Verarbeitungen durchführen
 
             elif request[0] == constChord.JOIN:
                 # Join request (the node was already registered above)
