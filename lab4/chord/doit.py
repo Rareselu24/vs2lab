@@ -1,4 +1,4 @@
-""" 
+"""
 Chord Application
 - defines a DummyChordClient implementation
 - sets up a ring of chord_node instances
@@ -10,6 +10,7 @@ Chord Application
 import logging
 import sys
 import multiprocessing as mp
+import random
 
 import chordnode as chord_node
 import constChord
@@ -29,10 +30,35 @@ class DummyChordClient:
         self.channel.bind(self.node_id)
 
     def run(self):
-        print("Implement me pls...")
-        self.channel.send_to(  # a final multicast
+        # Wähle zufälligen Key und zufälligen Zielknoten aus
+        nodes = {i.decode() for i in self.channel.channel.smembers('node')}
+        if not nodes:
+            print("No nodes available.")
+            return
+
+        random_key = random.randint(0, self.channel.MAXPROC - 1)
+        target_node = random.choice(list(nodes))
+
+        print(f"Client {self.node_id}: Sending LOOKUP request for key {random_key} to node {target_node}")
+        self.channel.send_to([target_node], (constChord.LOOKUP_REQ, self.node_id, random_key))
+
+        # Auf Antwort warten
+        while True:
+            message = self.channel.receive_from_any()
+            sender = message[0]
+            request = message[1]
+
+            if request[0] == constChord.LOOKUP_REP:
+                # Antwort mit Schlüssel erhalten
+                key = request[1]
+                print(f"Client {self.node_id}: Received LOOKUP_REP for key {key} from {sender}")
+                break
+
+        # Anschließend ggf. Knoten stoppen
+        self.channel.send_to(
             {i.decode() for i in list(self.channel.channel.smembers('node'))},
-            constChord.STOP)
+            constChord.STOP
+        )
 
 
 def create_and_run(num_bits, node_class, enter_bar, run_bar):
@@ -40,7 +66,7 @@ def create_and_run(num_bits, node_class, enter_bar, run_bar):
     Create and run a node (server or client role)
     :param num_bits: address range of the channel
     :param node_class: class of node
-    :param enter_bar: barrier syncing channel population 
+    :param enter_bar: barrier syncing channel population
     :param run_bar: barrier syncing node creation
     """
     chan = lab_channel.Channel(n_bits=num_bits)
