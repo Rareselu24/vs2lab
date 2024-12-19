@@ -40,6 +40,7 @@ def create_and_run(num_bits, proc_class, enter_bar, run_bar):
 
 
 def simulate_crashes(children, num_crashes=2):
+    time.sleep(4)
     """
     Simuliert den Absturz von Prozessen
     :param children: Liste der laufenden Prozesse

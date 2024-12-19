@@ -5,6 +5,11 @@ import threading
 
 from constMutex import ENTER, RELEASE, ALLOW
 
+from context import lab_logging
+
+# Setup Logging
+lab_logging.setup(stream_level=logging.DEBUG, file_level=logging.DEBUG)
+
 
 class Process:
     """
@@ -85,8 +90,6 @@ class Process:
         # construct new queue from later ENTER requests (removing all ALLOWS)
         tmp = [r for r in self.queue[1:] if r[2] == ENTER]
         self.queue = tmp  # and copy to new queue
-        self.logger.info("{} hat ENTER-Anfrage von {} erhalten (Clock: {})."
-                                 .format(self.__mapid(), self.__mapid(msg[1]), self.clock))
         self.clock = self.clock + 1  # Increment clock value
         msg = (self.clock, self.process_id, RELEASE)
         # Multicast release notification
