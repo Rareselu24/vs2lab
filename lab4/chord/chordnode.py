@@ -186,7 +186,7 @@ class ChordNode:
             elif request[0] == constChord.LEAVE:  # Leave request
                 self.logger.info("Node {:04n} received LEAVE from {:04n}."
                                  .format(self.node_id, int(sender)))
-                self.delete_node(sender)  # update known nodes
+                continue
 
             self.recompute_finger_table()  # adjust finger-table based on updated node set
 
